@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Telegram WebApp дефолти. JS перепише при ініціалізації. */
+  --tg-bg: #17212b;
+  --tg-bg-secondary: #232e3c;
+  --tg-text: #e8e8e8;
+  --tg-hint: #8a98a6;
+  --tg-link: #6ab3f5;
+  --tg-button: #6ab3f5;
+  --tg-button-text: #ffffff;
+  --tg-border: #2c3a4d;
+}
+
+html,
+body {
+  overscroll-behavior-y: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer components {
+  .tg-card {
+    @apply rounded-xl bg-tg-bgSecondary p-4;
+  }
+  .tg-button {
+    @apply rounded-xl bg-tg-button py-3.5 px-4 font-semibold text-tg-buttonText active:opacity-80;
+  }
+  .tg-button-secondary {
+    @apply rounded-xl bg-tg-bgSecondary py-3.5 px-4 font-semibold text-tg-link active:opacity-80;
+  }
+  .tg-input {
+    @apply w-full rounded-xl bg-tg-bgSecondary px-4 py-3 text-tg-text outline-none placeholder:text-tg-hint;
+  }
+  .tg-list-item {
+    @apply flex items-center gap-3 rounded-xl bg-tg-bgSecondary px-4 py-3;
+  }
+}

@@ -1,0 +1,616 @@
+// PhoneStore CRM — повна Prisma schema на MVP
+// Коментарі українською для зручності замовника.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
+}
+
+// ============================================================
+// Користувачі і ролі
+// ============================================================
+
+enum UserRole {
+  SELLER        // Продавець
+  DIRECTOR      // Директор магазину
+  OWNER         // Власник мережі
+  ADMIN         // Системний адміністратор
+  // Зарезервовано для етапу 2:
+  REGIONAL_MANAGER
+  ACCOUNTANT
+  SERVICE_ENGINEER
+}
+
+model User {
+  id              String   @id @default(cuid())
+  telegramId      BigInt   @unique
+  telegramUsername String? @unique
+  fullName        String
+  phone           String?
+  role            UserRole
+  storeId         String?
+  store           Store?   @relation(fields: [storeId], references: [id])
+  active          Boolean  @default(true)
+  pinHash         String?  // PIN-код для критичних дій (опціонально)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deactivatedAt   DateTime?
+
+  // зворотні зв'язки
+  salesAsSeller       Sale[]            @relation("SalesSeller")
+  createdTasks        Task[]            @relation("TaskCreator")
+  taskAssignments     TaskAssignee[]
+  taskEvidences       TaskEvidence[]
+  checklistsOpened    Checklist[]       @relation("ChecklistOpenedBy")
+  checklistsClosed    Checklist[]       @relation("ChecklistClosedBy")
+  checklistItems      ChecklistItem[]
+  batchesCreated      Batch[]
+  stockTransfersFrom  StockTransfer[]   @relation("TransferFromUser")
+  stockTransfersTo    StockTransfer[]   @relation("TransferToUser")
+  writeoffsCreated    StockWriteoff[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  kpiPlans            KpiPlan[]
+  storesAsDirector    Store[]           @relation("StoreDirector")
+
+  @@index([role, active])
+  @@index([storeId])
+  @@map("users")
+}
+
+// ============================================================
+// Магазини
+// ============================================================
+
+model Store {
+  id          String   @id @default(cuid())
+  name        String
+  address     String
+  phone       String?
+  directorId  String?
+  director    User?    @relation("StoreDirector", fields: [directorId], references: [id])
+  lat         Float?
+  lng         Float?
+  geofenceM   Int      @default(200)  // радіус геозони для чек-листів, метрів
+  workStart   String   @default("09:00")
+  workEnd     String   @default("21:00")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users           User[]
+  stockItems      StockItem[]
+  sales           Sale[]
+  checklists      Checklist[]
+  stockTransfersFrom StockTransfer[] @relation("TransferFromStore")
+  stockTransfersTo   StockTransfer[] @relation("TransferToStore")
+  batches         Batch[]
+  writeoffs       StockWriteoff[]
+
+  @@index([active])
+  @@map("stores")
+}
+
+// ============================================================
+// Каталог товарів
+// ============================================================
+
+enum ProductCategory {
+  SMARTPHONE
+  TABLET
+  CASE
+  GLASS
+  CHARGER
+  HEADPHONES
+  POWER_BANK
+  CABLE
+  OTHER
+}
+
+model Product {
+  id              String          @id @default(cuid())
+  brand           String          // Apple, Samsung
+  model           String          // iPhone 15 Pro
+  color           String?
+  memory          String?         // "256GB"
+  sku             String?         @unique
+  basePrice       Decimal         @db.Decimal(12, 2)
+  minPrice        Decimal         @db.Decimal(12, 2)
+  category        ProductCategory
+  hasImei         Boolean         @default(false)
+  active          Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  stockItems      StockItem[]
+  saleItems       SaleItem[]
+  batchItems      BatchItem[]
+
+  @@index([brand, model])
+  @@index([category, active])
+  @@map("products")
+}
+
+// ============================================================
+// Склад
+// ============================================================
+
+enum StockStatus {
+  AVAILABLE      // на складі, можна продати
+  RESERVED       // зарезервовано (черновик продажу)
+  SOLD           // продано
+  IN_TRANSIT     // в дорозі (переміщення)
+  WRITTEN_OFF    // списано
+  RETURNED       // повернено клієнтом (треба перевірити)
+}
+
+model StockItem {
+  id              String      @id @default(cuid())
+  productId       String
+  product         Product     @relation(fields: [productId], references: [id])
+  imei            String?     @unique
+  serialNumber    String?
+  storeId         String
+  store           Store       @relation(fields: [storeId], references: [id])
+  batchId         String?
+  batch           Batch?      @relation(fields: [batchId], references: [id])
+  purchasePrice   Decimal?    @db.Decimal(12, 2)
+  status          StockStatus @default(AVAILABLE)
+  arrivedAt       DateTime    @default(now())
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  saleItem        SaleItem?
+  transferFromItems StockTransferItem[] @relation("TransferItemFrom")
+
+  @@index([productId, storeId, status])
+  @@index([storeId, status])
+  @@index([imei])
+  @@map("stock_items")
+}
+
+// ============================================================
+// Партії (прибуттю товару)
+// ============================================================
+
+model Batch {
+  id          String   @id @default(cuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id])
+  supplier    String?
+  invoiceNo   String?
+  totalCost   Decimal? @db.Decimal(14, 2)
+  comment     String?
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  items       BatchItem[]
+  stockItems  StockItem[]
+
+  @@index([storeId, createdAt])
+  @@map("batches")
+}
+
+model BatchItem {
+  id          String  @id @default(cuid())
+  batchId     String
+  batch       Batch   @relation(fields: [batchId], references: [id])
+  productId   String
+  product     Product @relation(fields: [productId], references: [id])
+  quantity    Int
+  unitCost    Decimal @db.Decimal(12, 2)
+
+  @@map("batch_items")
+}
+
+// ============================================================
+// Переміщення між магазинами
+// ============================================================
+
+enum TransferStatus {
+  DRAFT
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+model StockTransfer {
+  id            String         @id @default(cuid())
+  fromStoreId   String
+  fromStore     Store          @relation("TransferFromStore", fields: [fromStoreId], references: [id])
+  toStoreId     String
+  toStore       Store          @relation("TransferToStore", fields: [toStoreId], references: [id])
+  fromUserId    String
+  fromUser      User           @relation("TransferFromUser", fields: [fromUserId], references: [id])
+  toUserId      String?
+  toUser        User?          @relation("TransferToUser", fields: [toUserId], references: [id])
+  status        TransferStatus @default(IN_TRANSIT)
+  comment       String?
+  sentAt        DateTime       @default(now())
+  receivedAt    DateTime?
+
+  items         StockTransferItem[]
+
+  @@index([fromStoreId, status])
+  @@index([toStoreId, status])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id            String         @id @default(cuid())
+  transferId    String
+  transfer      StockTransfer  @relation(fields: [transferId], references: [id])
+  stockItemId   String
+  stockItem     StockItem      @relation("TransferItemFrom", fields: [stockItemId], references: [id])
+
+  @@map("stock_transfer_items")
+}
+
+// ============================================================
+// Списання
+// ============================================================
+
+enum WriteoffReason {
+  DAMAGED
+  STOLEN
+  RETURN_TO_SUPPLIER
+  EXPIRED
+  OTHER
+}
+
+model StockWriteoff {
+  id            String         @id @default(cuid())
+  storeId       String
+  store         Store          @relation(fields: [storeId], references: [id])
+  reason        WriteoffReason
+  comment       String?
+  createdById   String
+  createdBy     User           @relation(fields: [createdById], references: [id])
+  createdAt     DateTime       @default(now())
+  totalCost     Decimal?       @db.Decimal(14, 2)
+
+  @@index([storeId, createdAt])
+  @@map("stock_writeoffs")
+}
+
+// ============================================================
+// Клієнти
+// ============================================================
+
+model Customer {
+  id          String   @id @default(cuid())
+  phoneHash   String   @unique   // хеш телефону для GDPR
+  phoneE164   String?            // нормалізований номер (опціонально, для зворотного зв'язку)
+  name        String?
+  birthDate   DateTime?
+  bonusBalance Decimal @default(0) @db.Decimal(12, 2)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sales       Sale[]
+
+  @@map("customers")
+}
+
+// ============================================================
+// Продажі
+// ============================================================
+
+enum PaymentMethod {
+  CASH
+  CARD
+  MIXED
+  CREDIT
+  BANK_TRANSFER
+}
+
+enum SaleStatus {
+  COMPLETED
+  PARTIALLY_RETURNED
+  FULLY_RETURNED
+  CANCELLED
+}
+
+model Sale {
+  id              String        @id @default(cuid())
+  storeId         String
+  store           Store         @relation(fields: [storeId], references: [id])
+  sellerId        String
+  seller          User          @relation("SalesSeller", fields: [sellerId], references: [id])
+  customerId      String?
+  customer        Customer?     @relation(fields: [customerId], references: [id])
+  total           Decimal       @db.Decimal(12, 2)
+  discount        Decimal       @default(0) @db.Decimal(12, 2)
+  discountReason  String?
+  paymentMethod   PaymentMethod
+  paymentDetails  Json?         // напр. {cash: 1000, card: 500} для MIXED
+  warrantyMonths  Int?
+  status          SaleStatus    @default(COMPLETED)
+  comment         String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           SaleItem[]
+  returns         Return[]
+
+  @@index([storeId, createdAt])
+  @@index([sellerId, createdAt])
+  @@index([customerId])
+  @@map("sales")
+}
+
+model SaleItem {
+  id              String     @id @default(cuid())
+  saleId          String
+  sale            Sale       @relation(fields: [saleId], references: [id])
+  productId       String
+  product         Product    @relation(fields: [productId], references: [id])
+  stockItemId     String?    @unique
+  stockItem       StockItem? @relation(fields: [stockItemId], references: [id])
+  quantity        Int        @default(1)
+  unitPrice       Decimal    @db.Decimal(12, 2)
+  discount        Decimal    @default(0) @db.Decimal(12, 2)
+
+  @@map("sale_items")
+}
+
+// ============================================================
+// Повернення
+// ============================================================
+
+model Return {
+  id              String   @id @default(cuid())
+  saleId          String
+  sale            Sale     @relation(fields: [saleId], references: [id])
+  reason          String
+  comment         String?
+  refundAmount    Decimal  @db.Decimal(12, 2)
+  createdById     String
+  createdAt       DateTime @default(now())
+
+  @@index([saleId])
+  @@map("returns")
+}
+
+// ============================================================
+// Чек-листи відкриття / закриття
+// ============================================================
+
+enum ChecklistType {
+  OPENING
+  CLOSING
+}
+
+model ChecklistTemplate {
+  id          String   @id @default(cuid())
+  storeId     String?  // null = шаблон для всіх магазинів
+  type        ChecklistType
+  name        String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       ChecklistTemplateItem[]
+  checklists  Checklist[]
+
+  @@index([storeId, type, active])
+  @@map("checklist_templates")
+}
+
+model ChecklistTemplateItem {
+  id              String  @id @default(cuid())
+  templateId      String
+  template        ChecklistTemplate @relation(fields: [templateId], references: [id])
+  order           Int
+  text            String
+  requirePhoto    Boolean @default(false)
+  requireLocation Boolean @default(false)
+
+  @@index([templateId, order])
+  @@map("checklist_template_items")
+}
+
+model Checklist {
+  id              String        @id @default(cuid())
+  templateId      String
+  template        ChecklistTemplate @relation(fields: [templateId], references: [id])
+  storeId         String
+  store           Store         @relation(fields: [storeId], references: [id])
+  type            ChecklistType
+  openedById      String
+  openedBy        User          @relation("ChecklistOpenedBy", fields: [openedById], references: [id])
+  closedById      String?
+  closedBy        User?         @relation("ChecklistClosedBy", fields: [closedById], references: [id])
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+
+  items           ChecklistItem[]
+
+  @@index([storeId, type, startedAt])
+  @@map("checklists")
+}
+
+model ChecklistItem {
+  id              String   @id @default(cuid())
+  checklistId     String
+  checklist       Checklist @relation(fields: [checklistId], references: [id])
+  text            String
+  requirePhoto    Boolean  @default(false)
+  photoUrl        String?
+  lat             Float?
+  lng             Float?
+  locationOk      Boolean? // null = не перевірялось, true/false = результат
+  completedAt     DateTime?
+  completedById   String?
+  completedBy     User?    @relation(fields: [completedById], references: [id])
+
+  @@index([checklistId])
+  @@map("checklist_items")
+}
+
+// ============================================================
+// Задачі
+// ============================================================
+
+enum TaskStatus {
+  NEW
+  IN_PROGRESS
+  DONE
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  title       String
+  description String?
+  createdById String
+  createdBy   User         @relation("TaskCreator", fields: [createdById], references: [id])
+  deadline    DateTime?
+  priority    TaskPriority @default(NORMAL)
+  status      TaskStatus   @default(NEW)
+  storeId     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  completedAt DateTime?
+
+  assignees   TaskAssignee[]
+  evidences   TaskEvidence[]
+
+  @@index([status, deadline])
+  @@map("tasks")
+}
+
+model TaskAssignee {
+  taskId      String
+  task        Task     @relation(fields: [taskId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  assignedAt  DateTime @default(now())
+
+  @@id([taskId, userId])
+  @@map("task_assignees")
+}
+
+model TaskEvidence {
+  id          String   @id @default(cuid())
+  taskId      String
+  task        Task     @relation(fields: [taskId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  photoUrl    String?
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  @@index([taskId])
+  @@map("task_evidences")
+}
+
+// ============================================================
+// KPI та премія
+// ============================================================
+
+model KpiPlan {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  year        Int
+  month       Int      // 1-12
+  planTotal   Decimal  @db.Decimal(12, 2)
+  planPhones  Decimal? @db.Decimal(12, 2)
+  planAccessories Decimal? @db.Decimal(12, 2)
+  bonusFormula Json    // {percentRevenue, percentAccessories, planBonus, returnPenalty, ...}
+  closedAt    DateTime?
+  closedBonus Decimal? @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, year, month])
+  @@map("kpi_plans")
+}
+
+// ============================================================
+// Системні налаштування мережі
+// ============================================================
+
+model AppSettings {
+  id                  String   @id @default("singleton")
+  defaultBonusFormula Json     // дефолтна формула премії
+  maxSellerDiscount   Float    @default(5)   // %
+  returnWindowDays    Int      @default(14)
+  workingHoursAlert   Int      @default(30)  // хв до робочого часу для алерта
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+// ============================================================
+// Audit log
+// ============================================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String   // 'sale.create', 'product.update', etc.
+  entity      String   // 'Sale', 'Product', etc.
+  entityId    String?
+  before      Json?
+  after       Json?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+  @@index([action, createdAt])
+  @@map("audit_log")
+}
+
+// ============================================================
+// Сповіщення
+// ============================================================
+
+enum NotificationType {
+  NEW_SALE
+  NEW_TASK
+  TASK_COMPLETED
+  RETURN_CREATED
+  STOCK_LOW
+  STORE_NOT_OPENED
+  ANOMALY
+  GENERIC
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id])
+  type        NotificationType
+  title       String
+  body        String?
+  payload     Json?
+  sentToTelegram Boolean       @default(false)
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
